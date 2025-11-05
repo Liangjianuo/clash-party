@@ -36,93 +36,85 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-      with:
-        fetch-depth: 0  # 获取完整历史，有助于依赖解析
     
-    - name: Setup Go
+    - name: Setup Go (without cache)
       uses: actions/setup-go@v4
       with:
         go-version: '1.21'
-        # 移除了 cache: true，因为可能没有 go.sum
+        # 注意：这里移除了 cache: true
     
-    - name: Check project structure
+    - name: Analyze project structure
       run: |
-        echo "=== Project Structure ==="
+        echo "=== Project Structure Analysis ==="
+        echo "Current directory: $(pwd)"
+        echo ""
+        echo "Top-level files:"
         ls -la
         echo ""
-        echo "=== Go Files ==="
-        find . -name "*.go" | head -10 || echo "No Go files found"
+        echo "Looking for Go files:"
+        find . -name "*.go" -type f | head -20
         echo ""
-        echo "=== Go Modules ==="
-        if [ -f "go.mod" ]; then
-          echo "Found go.mod:"
-          cat go.mod
-          if [ -f "go.sum" ]; then
-            echo "Found go.sum"
-          else
-            echo "No go.sum found, will generate it"
-          fi
-        else
-          echo "No go.mod found"
-        fi
-    
-    - name: Initialize Go modules (if needed)
-      run: |
-        if [ ! -f "go.mod" ]; then
-          echo "Initializing new Go module..."
-          go mod init github.com/${{ github.repository }}
-        fi
-        # 下载依赖
-        go mod tidy
-        # 现在应该有 go.sum 了
-        ls -la go.* || echo "No Go module files"
+        echo "Looking for main packages:"
+        find . -name "*.go" -type f -exec grep -l "package main" {} \; | head -10
+        echo ""
+        echo "Looking for main functions:"
+        find . -name "*.go" -type f -exec grep -l "func main()" {} \; | head -10
     
     - name: Build for ${{ matrix.arch }}
       run: |
-        echo "Building for ${{ matrix.arch }} (GOARCH=${{ matrix.goarch }})"
+        echo "=== Building for ${{ matrix.arch }} ==="
         
         # 设置编译环境
         export GOOS=linux
         export GOARCH=${{ matrix.goarch }}
         export CGO_ENABLED=0
         
-        # 设置 ARM 特定的环境变量
         if [ "${{ matrix.arch }}" = "armv7" ]; then
           export GOARM=7
         fi
         
-        # 尝试构建主程序
-        echo "Building Clash Party..."
+        echo "GOOS: $GOOS"
+        echo "GOARCH: $GOARCH"
+        echo "GOARM: $GOARM"
         
-        # 首先尝试构建整个项目
-        if [ -f "go.mod" ]; then
-          echo "Building using Go modules..."
-          go build -v -trimpath -ldflags="-w -s -X 'github.com/mihomo-party-org/clash-party/constant.Version=1.0.0-${{ github.sha }}'" -o clash-party-${{ matrix.arch }}
+        # 查找构建入口点
+        echo "Finding build entry point..."
+        
+        # 方法1: 查找包含 main 函数的文件
+        MAIN_FILE=$(find . -name "*.go" -type f -exec grep -l "func main()" {} \; | head -1)
+        
+        if [ -n "$MAIN_FILE" ]; then
+          echo "Found main function in: $MAIN_FILE"
+          echo "Building from specific main file..."
+          go build -v -trimpath -ldflags="-w -s" -o clash-party-${{ matrix.arch }} "$MAIN_FILE"
         else
-          # 如果没有 go.mod，尝试其他构建方式
-          echo "No go.mod found, trying alternative build methods..."
+          # 方法2: 查找包含 package main 的文件
+          MAIN_PKG_DIR=$(find . -name "*.go" -type f -exec grep -l "package main" {} \; | xargs dirname | sort -u | head -1)
           
-          # 查找 main 包
-          MAIN_FILE=$(find . -name "*.go" -type f -exec grep -l "func main()" {} \; | head -1)
-          if [ -n "$MAIN_FILE" ]; then
-            echo "Found main in: $MAIN_FILE"
-            go build -v -trimpath -ldflags="-w -s" -o clash-party-${{ matrix.arch }} $MAIN_FILE
+          if [ -n "$MAIN_PKG_DIR" ] && [ "$MAIN_PKG_DIR" != "." ]; then
+            echo "Found main package in directory: $MAIN_PKG_DIR"
+            echo "Building from package directory..."
+            cd "$MAIN_PKG_DIR"
+            go build -v -trimpath -ldflags="-w -s" -o ../clash-party-${{ matrix.arch }} .
+            cd ..
           else
-            # 最后尝试构建所有 Go 文件
-            echo "Building all Go files..."
-            go build -v -trimpath -ldflags="-w -s" -o clash-party-${{ matrix.arch }} ./...
+            # 方法3: 尝试构建当前目录
+            echo "Attempting to build current directory..."
+            go build -v -trimpath -ldflags="-w -s" -o clash-party-${{ matrix.arch }} .
           fi
         fi
         
-        # 检查构建结果
+        # 验证构建结果
         if [ -f "clash-party-${{ matrix.arch }}" ]; then
-          echo "Build successful!"
+          echo "✅ Build successful!"
+          echo "File info:"
           file clash-party-${{ matrix.arch }}
+          echo "File size:"
           ls -lh clash-party-${{ matrix.arch }}
-          # 使用 UPX 压缩（如果可用）
-          which upx && upx --best clash-party-${{ matrix.arch }} || echo "UPX not available"
         else
-          echo "Build failed - no output file"
+          echo "❌ Build failed - no output file produced"
+          echo "Available files:"
+          ls -la
           exit 1
         fi
     
@@ -142,16 +134,14 @@ jobs:
     - name: Download all artifacts
       uses: actions/download-artifact@v4
       
-    - name: List and verify artifacts
+    - name: Verify artifacts
       run: |
-        echo "=== Downloaded artifacts ==="
+        echo "=== Downloaded Artifacts ==="
         find . -name "clash-party-*" -type f
         echo ""
-        echo "=== File details ==="
+        echo "=== File Details ==="
         for file in clash-party-*; do
-          if [ -f "$file" ]; then
-            echo "$file: $(file "$file")"
-          fi
+          echo "📄 $file: $(file "$file") ($(ls -lh "$file" | awk '{print $5}'))"
         done
     
     - name: Create Release
@@ -164,26 +154,21 @@ jobs:
         body: |
           Automated build of Clash Party
           
-          **Commit:** ${{ github.sha }}
-          **Build Date:** ${{ github.event.head_commit.timestamp }}
-          **Repository:** ${{ github.repository }}
+          **Build Info:**
+          - Commit: ${{ github.sha }}
+          - Build Date: ${{ github.event.head_commit.timestamp }}
+          - Repository: ${{ github.repository }}
           
-          **Available Architectures:**
+          **Available Binaries:**
           - `clash-party-x86_64` - Linux AMD64
           - `clash-party-aarch64` - Linux ARM64  
           - `clash-party-armv7` - Linux ARMv7
           
           **Usage:**
           ```bash
+          # Make executable and run
           chmod +x clash-party-<architecture>
           ./clash-party-<architecture>
-          ```
-          
-          **Install on OpenWrt/iStoreOS:**
-          ```bash
-          # Copy to device and set permissions
-          scp clash-party-<architecture> root@192.168.1.1:/usr/bin/clash-party
-          ssh root@192.168.1.1 "chmod +x /usr/bin/clash-party"
           ```
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
