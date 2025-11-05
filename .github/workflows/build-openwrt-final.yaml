@@ -28,7 +28,7 @@ jobs:
         mkdir -p package-files/etc/config
         mkdir -p package-files/etc/clash-party
         
-        # 创建 init 脚本
+        # 创建 init 脚本 - 使用正确的多行字符串格式
         cat > package-files/etc/init.d/clash-party << 'EOF'
 #!/bin/sh /etc/rc.common
 
@@ -110,7 +110,7 @@ EOF
         cp -r package-files/* ipk-build/data/
         
         # 创建 control 文件
-        cat > ipk-build/control/control << EOF
+        cat > ipk-build/control/control << 'EOF'
 Package: clash-party
 Version: 1.0.0-1
 Depends: kmod-tun
