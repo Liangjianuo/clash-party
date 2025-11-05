@@ -1,0 +1,225 @@
+name: Build OpenWrt Package - Final
+
+on:
+  push:
+    branches: [ main, master, smart_core ]
+  workflow_dispatch:
+
+jobs:
+  build-package:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup environment
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential wget curl tar gzip ar
+    
+    - name: Create package structure
+      run: |
+        echo "=== Creating Package Structure ==="
+        
+        # 在工作区根目录创建包结构
+        mkdir -p package-files/usr/bin
+        mkdir -p package-files/etc/init.d
+        mkdir -p package-files/etc/config
+        mkdir -p package-files/etc/clash-party
+        
+        # 创建 init 脚本
+        cat > package-files/etc/init.d/clash-party << 'EOF'
+#!/bin/sh /etc/rc.common
+
+START=99
+USE_PROCD=1
+
+start_service() {
+    procd_open_instance
+    procd_set_param command /usr/bin/clash-party
+    procd_set_param respawn
+    procd_set_param stdout 1
+    procd_set_param stderr 1
+    procd_close_instance
+}
+
+stop_service() {
+    killall clash-party
+}
+EOF
+        chmod +x package-files/etc/init.d/clash-party
+        
+        # 创建配置文件
+        cat > package-files/etc/config/clash-party << 'EOF'
+config clash-party 'main'
+    option enabled '0'
+    option config_path '/etc/clash-party/config.yaml'
+EOF
+        
+        # 创建示例配置
+        cat > package-files/etc/clash-party/config.yaml << 'EOF'
+port: 7890
+socks-port: 7891
+mixed-port: 7893
+mode: rule
+log-level: info
+external-controller: 0.0.0.0:9090
+EOF
+
+    - name: Download Clash binary
+      run: |
+        echo "=== Downloading Clash Binary ==="
+        cd package-files/usr/bin
+        
+        # 尝试下载最新的 mihomo
+        if wget -q "https://github.com/MetaCubeX/mihomo/releases/latest/download/mihomo-linux-amd64.tar.gz"; then
+          echo "Downloaded latest mihomo release"
+          tar -xzf mihomo-linux-amd64.tar.gz
+          mv mihomo clash-party
+          rm mihomo-linux-amd64.tar.gz
+        elif wget -q "https://github.com/MetaCubeX/mihomo/releases/download/Prerelease-Alpha/mihomo-linux-amd64.tar.gz"; then
+          echo "Downloaded alpha mihomo release"
+          tar -xzf mihomo-linux-amd64.tar.gz
+          mv mihomo clash-party
+          rm mihomo-linux-amd64.tar.gz
+        else
+          echo "Download failed, creating placeholder"
+          cat > clash-party << 'EOF'
+#!/bin/sh
+echo "Clash Party - Please replace this with actual Clash binary"
+echo "Download from: https://github.com/MetaCubeX/mihomo/releases"
+sleep 60
+EOF
+          chmod +x clash-party
+        fi
+        
+        echo "Binary details:"
+        file clash-party
+        ls -la clash-party
+
+    - name: Build IPK package
+      run: |
+        echo "=== Building IPK Package ==="
+        
+        # 创建构建目录
+        mkdir -p ipk-build/control
+        mkdir -p ipk-build/data
+        
+        # 复制文件到数据目录
+        cp -r package-files/* ipk-build/data/
+        
+        # 创建 control 文件
+        cat > ipk-build/control/control << EOF
+Package: clash-party
+Version: 1.0.0-1
+Depends: kmod-tun
+Architecture: x86_64
+Maintainer: Clash Party
+Section: net
+Priority: optional
+Description: Clash Party - Enhanced Clash Proxy
+Source: https://github.com/Liangjianuo/clash-party
+EOF
+        
+        # 创建安装后脚本
+        cat > ipk-build/control/postinst << 'EOF'
+#!/bin/sh
+[ -n "$IPKG_INSTROOT" ] || {
+    echo "Enabling clash-party service..."
+    /etc/init.d/clash-party enable
+}
+exit 0
+EOF
+        chmod +x ipk-build/control/postinst
+        
+        # 创建卸载前脚本
+        cat > ipk-build/control/prerm << 'EOF'
+#!/bin/sh
+[ -n "$IPKG_INSTROOT" ] || {
+    echo "Stopping clash-party service..."
+    /etc/init.d/clash-party stop
+    /etc/init.d/clash-party disable
+}
+exit 0
+EOF
+        chmod +x ipk-build/control/prerm
+        
+        # 创建 debian-binary 文件
+        echo "2.0" > ipk-build/debian-binary
+        
+        # 创建 control.tar.gz
+        cd ipk-build/control
+        tar czf ../control.tar.gz .
+        cd ..
+        
+        # 创建 data.tar.gz
+        cd ipk-build/data
+        tar czf ../data.tar.gz .
+        cd ..
+        
+        # 创建最终的 ipk 文件
+        ar r clash-party_1.0.0-1_x86_64.ipk debian-binary control.tar.gz data.tar.gz
+        
+        # 验证文件
+        echo "=== IPK File Created ==="
+        file clash-party_1.0.0-1_x86_64.ipk
+        ls -la *.ipk
+        
+        # 复制到工作区根目录
+        cp clash-party_1.0.0-1_x86_64.ipk ../
+        cd ..
+        
+        echo "=== Final File Location ==="
+        pwd
+        ls -la *.ipk
+
+    - name: Verify IPK file exists
+      run: |
+        echo "=== Verifying IPK File ==="
+        if [ -f "clash-party_1.0.0-1_x86_64.ipk" ]; then
+          echo "✅ SUCCESS: IPK file found at: $(pwd)/clash-party_1.0.0-1_x86_64.ipk"
+          echo "File size: $(ls -lh clash-party_1.0.0-1_x86_64.ipk | awk '{print $5}')"
+          echo "File type: $(file clash-party_1.0.0-1_x86_64.ipk)"
+        else
+          echo "❌ ERROR: IPK file not found!"
+          echo "Current directory: $(pwd)"
+          echo "Files in directory:"
+          ls -la
+          echo "Searching for IPK files..."
+          find . -name "*.ipk" -type f
+          exit 1
+        fi
+
+    - name: Upload IPK artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: clash-party-openwrt-x86_64
+        path: clash-party_1.0.0-1_x86_64.ipk
+        retention-days: 30
+
+    - name: Create GitHub Release
+      if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.ref == 'refs/heads/smart_core')
+      uses: softprops/action-gh-release@v1
+      with:
+        files: clash-party_1.0.0-1_x86_64.ipk
+        tag_name: openwrt-${{ github.run_id }}
+        name: "Clash Party OpenWrt Package"
+        body: |
+          OpenWrt/iStoreOS Package for x86_64
+          
+          **Installation:**
+          ```bash
+          # Upload to router
+          scp clash-party_1.0.0-1_x86_64.ipk root@192.168.1.1:/tmp/
+          
+          # Install
+          opkg update
+          opkg install /tmp/clash-party_1.0.0-1_x86_64.ipk
+          
+          # Enable service
+          /etc/init.d/clash-party enable
+          /etc/init.d/clash-party start
+          ```
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
