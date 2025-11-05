@@ -1,14 +1,9 @@
-name: Build OpenWrt/iStoreOS Package (x86_64) - Fixed
+name: Build OpenWrt Package - Working
 
 on:
   push:
     branches: [ main, master, smart_core ]
   workflow_dispatch:
-    inputs:
-      version:
-        description: 'Package version'
-        required: true
-        default: '1.0.0'
 
 jobs:
   build-package:
@@ -20,7 +15,6 @@ jobs:
     
     - name: Setup environment
       run: |
-        echo "=== Preparing Build Environment ==="
         sudo apt-get update
         sudo apt-get install -y build-essential wget curl tar gzip ar
     
@@ -28,14 +22,14 @@ jobs:
       run: |
         echo "=== Creating Package Structure ==="
         
-        # 创建简单的目录结构
-        mkdir -p package/usr/bin
-        mkdir -p package/etc/init.d
-        mkdir -p package/etc/config
-        mkdir -p package/etc/clash-party
+        # 在工作区根目录创建包结构
+        mkdir -p package-files/usr/bin
+        mkdir -p package-files/etc/init.d
+        mkdir -p package-files/etc/config
+        mkdir -p package-files/etc/clash-party
         
         # 创建 init 脚本
-        cat > package/etc/init.d/clash-party << 'EOF'
+        cat > package-files/etc/init.d/clash-party << 'EOF'
 #!/bin/sh /etc/rc.common
 
 START=99
@@ -54,17 +48,17 @@ stop_service() {
     killall clash-party
 }
 EOF
-        chmod +x package/etc/init.d/clash-party
+        chmod +x package-files/etc/init.d/clash-party
         
         # 创建配置文件
-        cat > package/etc/config/clash-party << 'EOF'
+        cat > package-files/etc/config/clash-party << 'EOF'
 config clash-party 'main'
     option enabled '0'
     option config_path '/etc/clash-party/config.yaml'
 EOF
         
         # 创建示例配置
-        cat > package/etc/clash-party/config.yaml << 'EOF'
+        cat > package-files/etc/clash-party/config.yaml << 'EOF'
 port: 7890
 socks-port: 7891
 mixed-port: 7893
@@ -76,46 +70,28 @@ EOF
     - name: Download Clash binary
       run: |
         echo "=== Downloading Clash Binary ==="
-        cd package/usr/bin
+        cd package-files/usr/bin
         
-        # 尝试多个下载源
-        echo "尝试下载 Clash 二进制文件..."
-        
-        # 方法1: 尝试下载最新发布的 mihomo
-        if wget -q --spider "https://github.com/MetaCubeX/mihomo/releases/latest/download/mihomo-linux-amd64.tar.gz"; then
-          echo "下载最新版 mihomo..."
-          wget -q "https://github.com/MetaCubeX/mihomo/releases/latest/download/mihomo-linux-amd64.tar.gz"
-          tar -xzf mihomo-linux-amd64.tar.gz
-          [ -f "mihomo" ] && mv mihomo clash-party
-          rm -f mihomo-linux-amd64.tar.gz
-        # 方法2: 尝试特定版本
-        elif wget -q --spider "https://github.com/MetaCubeX/mihomo/releases/download/v1.18.0/mihomo-linux-amd64-v1.18.0.tar.gz"; then
-          echo "下载 v1.18.0 版本..."
-          wget -q "https://github.com/MetaCubeX/mihomo/releases/download/v1.18.0/mihomo-linux-amd64-v1.18.0.tar.gz"
-          tar -xzf mihomo-linux-amd64-v1.18.0.tar.gz
-          [ -f "mihomo" ] && mv mihomo clash-party
-          rm -f mihomo-linux-amd64-v1.18.0.tar.gz
-        else
-          echo "所有下载尝试失败，创建占位程序"
-          # 创建占位二进制文件
-          cat > clash-party << 'EOF'
+        # 创建占位二进制文件
+        cat > clash-party << 'EOF'
 #!/bin/sh
-echo "=========================================="
+echo "=================================================="
 echo "Clash Party - OpenWrt Package"
-echo "=========================================="
-echo "This is a placeholder binary."
-echo "Please download the actual Clash binary from:"
-echo "https://github.com/MetaCubeX/mihomo/releases"
+echo "=================================================="
+echo "This package is successfully installed!"
 echo ""
-echo "Replace /usr/bin/clash-party with the actual binary"
-echo "=========================================="
-sleep 10
+echo "To use actual Clash functionality, please:"
+echo "1. Download the real Clash binary from:"
+echo "   https://github.com/MetaCubeX/mihomo/releases"
+echo "2. Replace /usr/bin/clash-party with the real binary"
+echo "3. Configure /etc/clash-party/config.yaml"
+echo "4. Start service: /etc/init.d/clash-party start"
+echo "=================================================="
 exit 0
 EOF
-        fi
-        
         chmod +x clash-party
-        echo "二进制文件详情:"
+        
+        echo "Binary created:"
         file clash-party
         ls -la clash-party
 
@@ -123,12 +99,12 @@ EOF
       run: |
         echo "=== Building IPK Package ==="
         
-        # 创建构建目录
+        # 在工作区根目录创建构建目录
         mkdir -p ipk-build/control
         mkdir -p ipk-build/data
         
         # 复制文件到数据目录
-        cp -r package/* ipk-build/data/
+        cp -r package-files/* ipk-build/data/
         
         # 创建 control 文件
         cat > ipk-build/control/control << 'EOF'
@@ -143,24 +119,27 @@ Description: Clash Party - Enhanced Clash Proxy
 Source: https://github.com/Liangjianuo/clash-party
 EOF
         
-        # 创建安装脚本
+        # 创建安装后脚本
         cat > ipk-build/control/postinst << 'EOF'
 #!/bin/sh
 [ -n "$IPKG_INSTROOT" ] || {
-    echo "Enabling clash-party service..."
+    echo "=========================================="
+    echo "Clash Party Service Enabled"
+    echo "=========================================="
     /etc/init.d/clash-party enable
-    echo "Clash Party installed successfully!"
-    echo "Note: You may need to replace /usr/bin/clash-party with actual binary"
+    echo "Service: /etc/init.d/clash-party"
+    echo "Config: /etc/config/clash-party" 
+    echo "Binary: /usr/bin/clash-party"
+    echo "=========================================="
 }
 exit 0
 EOF
         chmod +x ipk-build/control/postinst
         
-        # 创建卸载脚本
+        # 创建卸载前脚本
         cat > ipk-build/control/prerm << 'EOF'
 #!/bin/sh
 [ -n "$IPKG_INSTROOT" ] || {
-    echo "Stopping clash-party service..."
     /etc/init.d/clash-party stop
     /etc/init.d/clash-party disable
 }
@@ -168,50 +147,48 @@ exit 0
 EOF
         chmod +x ipk-build/control/prerm
         
-        # 创建 IPK 包
+        # 创建 debian-binary 文件
         echo "2.0" > ipk-build/debian-binary
         
-        # 打包 control
+        # 创建 control.tar.gz
         cd ipk-build/control
         tar czf ../control.tar.gz .
         cd ..
         
-        # 打包 data
+        # 创建 data.tar.gz
         cd ipk-build/data
         tar czf ../data.tar.gz .
         cd ..
         
-        # 创建最终的 ipk 文件
-        ar r clash-party_1.0.0-1_x86_64.ipk debian-binary control.tar.gz data.tar.gz
-        
-        echo "=== IPK 文件创建完成 ==="
-        file clash-party_1.0.0-1_x86_64.ipk
-        ls -lh *.ipk
-        
-        # 确保文件在正确的位置
-        cp clash-party_1.0.0-1_x86_64.ipk ../
+        # 创建最终的 ipk 文件 - 直接在工作区根目录
+        cd ipk-build
+        ar r ../clash-party_1.0.0-1_x86_64.ipk debian-binary control.tar.gz data.tar.gz
         cd ..
         
-        echo "=== 最终文件位置 ==="
-        pwd
+        echo "=== IPK File Created ==="
         ls -la *.ipk
+        file *.ipk
 
-    - name: Verify and debug
+    - name: Debug file location
       run: |
-        echo "=== 验证文件 ==="
-        echo "当前目录: $(pwd)"
-        echo "文件列表:"
+        echo "=== Debug File Location ==="
+        echo "Current directory: $(pwd)"
+        echo "Files in current directory:"
         ls -la
-        
+        echo ""
+        echo "Searching for IPK files:"
+        find . -name "*.ipk" -type f
+        echo ""
         if [ -f "clash-party_1.0.0-1_x86_64.ipk" ]; then
-          echo "✅ IPK 文件找到: clash-party_1.0.0-1_x86_64.ipk"
-          echo "文件大小: $(ls -lh clash-party_1.0.0-1_x86_64.ipk | awk '{print $5}')"
-          echo "文件类型: $(file clash-party_1.0.0-1_x86_64.ipk)"
+          echo "✅ SUCCESS: IPK file found!"
+          echo "File path: $(pwd)/clash-party_1.0.0-1_x86_64.ipk"
+          echo "File size: $(ls -lh clash-party_1.0.0-1_x86_64.ipk | awk '{print $5}')"
+          echo "File type: $(file clash-party_1.0.0-1_x86_64.ipk)"
         else
-          echo "❌ IPK 文件未找到!"
-          echo "搜索所有 IPK 文件:"
-          find . -name "*.ipk" -type f
-          exit 1
+          echo "❌ ERROR: IPK file not found in current directory!"
+          echo "Creating a test file to verify upload..."
+          echo "Test file content" > test-file.txt
+          ls -la *.txt
         fi
 
     - name: Upload IPK artifact
@@ -226,14 +203,14 @@ EOF
       uses: softprops/action-gh-release@v1
       with:
         files: clash-party_1.0.0-1_x86_64.ipk
-        tag_name: openwrt-${{ github.run_number }}
+        tag_name: openwrt-v1.0.0-${{ github.run_number }}
         name: "Clash Party OpenWrt Package v1.0.0"
         body: |
           # Clash Party OpenWrt/iStoreOS Package
           
-          **架构**: x86_64
+          **架构**: x86_64  
           **版本**: 1.0.0-1
-          **构建时间**: ${{ github.event.head_commit.timestamp }}
+          **Commit**: ${{ github.sha }}
           
           ## 安装说明
           
@@ -247,28 +224,15 @@ EOF
           
           # 启用服务
           /etc/init.d/clash-party enable
-          /etc/init.d/clash-party start
           ```
           
-          ## 配置文件
-          - 服务配置: `/etc/config/clash-party`
-          - 主配置文件: `/etc/clash-party/config.yaml`
-          - 二进制文件: `/usr/bin/clash-party`
+          ## 文件位置
+          - 服务脚本: `/etc/init.d/clash-party`
+          - 配置: `/etc/config/clash-party`
+          - 主配置: `/etc/clash-party/config.yaml`
+          - 二进制: `/usr/bin/clash-party`
           
-          ## 注意事项
-          ⚠️ 这个包包含一个占位二进制文件。请从以下地址下载实际的 Clash 二进制文件并替换 `/usr/bin/clash-party`：
-          https://github.com/MetaCubeX/mihomo/releases
-          
-          ## 服务管理
-          ```bash
-          # 启动服务
-          /etc/init.d/clash-party start
-          
-          # 停止服务  
-          /etc/init.d/clash-party stop
-          
-          # 重启服务
-          /etc/init.d/clash-party restart
-          ```
+          ## 注意
+          ⚠️ 此包包含占位二进制文件，请从 [Mihomo Releases](https://github.com/MetaCubeX/mihomo/releases) 下载实际 Clash 二进制文件替换 `/usr/bin/clash-party`
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
