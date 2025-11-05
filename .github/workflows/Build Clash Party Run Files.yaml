@@ -1,11 +1,11 @@
 #=================================================
-# https://github.com/mihomo-party-org/clash-party
-# Description: Build RunFiles for Clash Party using GitHub Actions
+# https://github.com/Liangjianuo/clash-party
+# Description: Build Clash Party for OpenWrt x86_64 from source
 # Lisence: MIT
-# Author: Clash Party Team
+# Author: Liangjianuo
 #=================================================
 
-name: Build Clash Party Run Files
+name: Build Clash Party for OpenWrt x86_64
 
 on:
   workflow_dispatch:
@@ -20,191 +20,338 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
-      
-      - name: Fetch latest release tag from clash-party
-        id: fetch_latest_tag
+        with:
+          submodules: recursive
+
+      - name: Get version info
+        id: version
         run: |
-          latest_tag=$(curl -s https://api.github.com/repos/mihomo-party-org/clash-party/releases/latest | jq -r '.tag_name')
-          echo "LATEST_TAG=$latest_tag" >> $GITHUB_ENV
-          
-      - name: Clone makeself repository
+          if [ "${{ github.event_name }}" == "push" ] && [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          else
+            VERSION=$(date +%Y%m%d)
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "Building version: $VERSION"
+
+      - name: Setup Go environment
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+
+      - name: Clone makeself
         run: git clone https://github.com/megastep/makeself.git
 
-      - name: Download latest clash-party files
+      - name: Install build dependencies
         run: |
-          # 获取最新的 release 资产信息
-          assets_json=$(curl -s https://api.github.com/repos/mihomo-party-org/clash-party/releases/latest)
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            git \
+            wget \
+            unzip \
+            upx
+
+      - name: Build Clash Party binary
+        run: |
+          echo "开始编译 Clash Party..."
+          cd $GITHUB_WORKSPACE
           
-          # 下载所有 ipk 文件
-          echo "$assets_json" | grep -oP '"browser_download_url":\s*".*\.ipk"' | cut -d '"' -f 4 | while read url; do
-            if echo "$url" | grep -q "x86_64"; then
-              curl -LO "$url"
-              mkdir -p clash_party_x86_64
-            elif echo "$url" | grep -q "aarch64\|arm64"; then
-              curl -LO "$url"
-              mkdir -p clash_party_aarch64
-            elif echo "$url" | grep -q "arm"; then
-              curl -LO "$url"
-              mkdir -p clash_party_arm
+          # 检查构建系统
+          if [ -f "Makefile" ] || [ -f "makefile" ]; then
+            echo "使用 Makefile 构建..."
+            make build || make
+          elif [ -f "go.mod" ]; then
+            echo "使用 Go 构建..."
+            go build -o clash-party -ldflags="-s -w" -trimpath ./cmd/clash-party || \
+            go build -o clash-party -ldflags="-s -w" -trimpath ./main.go || \
+            go build -o clash-party -ldflags="-s -w" -trimpath .
+          else
+            echo "未找到标准的构建文件，尝试查找构建脚本..."
+            # 查找可能的构建脚本
+            if [ -f "build.sh" ]; then
+              chmod +x build.sh
+              ./build.sh
+            elif [ -f "scripts/build.sh" ]; then
+              chmod +x scripts/build.sh
+              ./scripts/build.sh
             else
-              curl -LO "$url"
-              mkdir -p clash_party_generic
+              echo "错误：未找到构建系统"
+              exit 1
             fi
-          done
-
-      - name: Organize files by architecture
-        run: |
-          # 移动文件到对应架构目录
-          for file in *.ipk; do
-            if [ -f "$file" ]; then
-              if echo "$file" | grep -qi "x86_64"; then
-                mv "$file" clash_party_x86_64/
-              elif echo "$file" | grep -qi "aarch64\|arm64"; then
-                mv "$file" clash_party_aarch64/
-              elif echo "$file" | grep -qi "arm"; then
-                mv "$file" clash_party_arm/
-              else
-                mv "$file" clash_party_generic/
-              fi
-            fi
-          done
+          fi
           
-          # 清理文件名（去除特殊字符）
-          for arch_dir in clash_party_*; do
-            if [ -d "$arch_dir" ]; then
-              pushd "$arch_dir" >/dev/null || exit 1
-              for file in *~*.ipk *\ *.ipk; do
-                [ -e "$file" ] || continue
-                # 构造新文件名，去除 ~ 和空格等特殊字符
-                new_file="$(echo "$file" | sed 's/[~ ]//g')"
-                # 如果目标文件名已存在，则提示并跳过
-                if [ -e "$new_file" ]; then
-                  echo "目标文件已存在，跳过: $new_file"
-                  continue
-                fi
-                # 重命名文件
-                mv "$file" "$new_file"
-                echo "已重命名: $file -> $new_file"
-              done
-              popd >/dev/null
+          # 检查是否生成了二进制文件
+          if [ -f "clash-party" ]; then
+            echo "编译成功！"
+            ls -lh clash-party
+          else
+            # 尝试查找其他可能的二进制文件名
+            BINARY=$(find . -name "clash-party" -type f -executable | head -1)
+            if [ -n "$BINARY" ]; then
+              echo "找到二进制文件: $BINARY"
+              cp "$BINARY" ./clash-party
+            else
+              echo "错误：未生成二进制文件"
+              find . -name "*clash*" -type f -executable
+              exit 1
             fi
-          done
+          fi
 
-      - name: Create install.sh scripts
+      - name: Optimize binary
         run: |
-          # 创建通用安装脚本
-          cat <<'EOF' > install_template.sh
+          if [ -f "clash-party" ]; then
+            echo "优化二进制文件..."
+            strip clash-party || true
+            which upx && upx --best clash-party || echo "UPX 未安装，跳过压缩"
+            ls -lh clash-party
+          fi
+
+      - name: Create OpenWrt package structure
+        run: |
+          echo "创建 OpenWrt 包结构..."
+          mkdir -p clash-party-openwrt/usr/bin
+          mkdir -p clash-party-openwrt/etc/init.d
+          mkdir -p clash-party-openwrt/etc/config
+          
+          # 复制二进制文件
+          cp clash-party clash-party-openwrt/usr/bin/
+          chmod +x clash-party-openwrt/usr/bin/clash-party
+          
+          # 创建 init 脚本
+          cat > clash-party-openwrt/etc/init.d/clash-party << 'EOF'
+          #!/bin/sh /etc/rc.common
+          START=99
+          STOP=01
+          
+          start() {
+              echo "Starting Clash Party..."
+              /usr/bin/clash-party -d /etc/clash-party &
+          }
+          
+          stop() {
+              echo "Stopping Clash Party..."
+              killall clash-party
+          }
+          
+          restart() {
+              stop
+              sleep 2
+              start
+          }
+          EOF
+          chmod +x clash-party-openwrt/etc/init.d/clash-party
+          
+          # 创建配置文件
+          cat > clash-party-openwrt/etc/config/clash-party << 'EOF'
+          config clash-party 'main'
+              option enabled '0'
+              option config_path '/etc/clash-party/config.yaml'
+          EOF
+          
+          # 创建控制脚本
+          cat > clash-party-openwrt/control << 'EOF'
+          Package: clash-party
+          Version: $VERSION
+          Depends: libc
+          Source: https://github.com/Liangjianuo/clash-party
+          Section: net
+          Architecture: x86_64
+          Installed-Size: `du -k clash-party-openwrt | tail -1 | awk '{print $1}'`
+          Description: Clash Party - A proxy tool
+          EOF
+          
+          # 创建安装后脚本
+          cat > clash-party-openwrt/postinst << 'EOF'
           #!/bin/sh
-          echo "开始安装 Clash Party..."
+          [ -n "${IPKG_INSTROOT}" ] && exit 0
+          echo "Clash Party 安装完成！"
+          echo "请编辑 /etc/config/clash-party 启用服务"
+          echo "然后运行: /etc/init.d/clash-party enable"
+          echo "        /etc/init.d/clash-party start"
+          exit 0
+          EOF
+          chmod +x clash-party-openwrt/postinst
+
+      - name: Create IPK package
+        run: |
+          echo "创建 IPK 包..."
+          cd clash-party-openwrt
           
-          # 检查 opkg 是否可用
+          # 计算安装大小
+          INSTALLED_SIZE=$(du -sk . | awk '{print $1}')
+          sed -i "s/Installed-Size:.*/Installed-Size: $INSTALLED_SIZE/" control
+          sed -i "s/Version:.*/Version: ${{ env.VERSION }}/" control
+          
+          # 创建数据包
+          tar -czf data.tar.gz usr etc --owner=0 --group=0
+          # 创建控制包
+          tar -czf control.tar.gz control postinst --owner=0 --group=0
+          
+          # 创建 debian-binary
+          echo "2.0" > debian-binary
+          
+          # 创建 IPK 文件
+          ar r ../clash-party_${{ env.VERSION }}_x86_64.ipk debian-binary control.tar.gz data.tar.gz
+          cd ..
+          
+          echo "IPK 包创建完成:"
+          ls -lh *.ipk
+
+      - name: Create installer script
+        run: |
+          echo "创建安装脚本..."
+          mkdir -p installer-package
+          cp clash-party_${{ env.VERSION }}_x86_64.ipk installer-package/
+          
+          cat > installer-package/install.sh << 'EOF'
+          #!/bin/sh
+          echo "==========================================="
+          echo "Clash Party OpenWrt 安装器"
+          echo "版本: ${{ env.VERSION }}"
+          echo "架构: x86_64"
+          echo "==========================================="
+          
+          # 检查运行环境
           if ! command -v opkg >/dev/null 2>&1; then
-              echo "错误: 未找到 opkg 命令，请确保在 OpenWrt/iStoreOS 环境中运行"
+              echo "错误: 未找到 opkg 命令"
+              echo "请确保在 OpenWrt 或 iStoreOS 环境中运行"
               exit 1
           fi
           
-          # 更新软件包列表
-          echo "更新软件包列表..."
-          opkg update
-          if [ $? -ne 0 ]; then
-              echo "警告: 更新软件包列表失败，尝试继续安装..."
+          # 检查架构
+          ARCH=$(uname -m)
+          if [ "$ARCH" != "x86_64" ]; then
+              echo "警告: 当前架构为 $ARCH，但此包为 x86_64 架构"
+              read -p "是否继续安装？(y/N): " confirm
+              case "$confirm" in
+                [yY]|[yY][eE][sS])
+                  echo "继续安装..."
+                  ;;
+                *)
+                  echo "安装已取消"
+                  exit 1
+                  ;;
+              esac
           fi
           
-          # 安装所有 ipk 文件
-          echo "安装 Clash Party 组件..."
-          for ipk in *.ipk; do
-              if [ -f "$ipk" ]; then
-                  echo "正在安装: $ipk"
-                  opkg install "$ipk"
-                  if [ $? -ne 0 ]; then
-                      echo "错误: 安装 $ipk 失败"
-                      exit 1
-                  fi
-              fi
-          done
+          echo "开始安装 Clash Party..."
+          opkg update
+          opkg install ./clash-party_${{ env.VERSION }}_x86_64.ipk
           
-          echo "Clash Party 安装完成!"
-          echo "请通过 LuCI 界面或命令行配置和使用 Clash Party"
+          if [ $? -eq 0 ]; then
+              echo ""
+              echo "==========================================="
+              echo "安装成功！"
+              echo "==========================================="
+              echo ""
+              echo "下一步操作："
+              echo "1. 编辑配置: vi /etc/config/clash-party"
+              echo "2. 启用服务: /etc/init.d/clash-party enable"
+              echo "3. 启动服务: /etc/init.d/clash-party start"
+              echo "4. 检查状态: /etc/init.d/clash-party status"
+              echo ""
+              echo "项目地址: https://github.com/Liangjianuo/clash-party"
+              echo "==========================================="
+          else
+              echo "安装失败！"
+              exit 1
+          fi
           EOF
           
-          # 为每个架构目录复制安装脚本
-          for arch_dir in clash_party_*; do
-            if [ -d "$arch_dir" ]; then
-              cp install_template.sh "$arch_dir/install.sh"
-              chmod +x "$arch_dir/install.sh"
-            fi
-          done
+          chmod +x installer-package/install.sh
           
-          # 清理模板文件
-          rm -f install_template.sh
-
-      - name: Move clash-party directories to makeself
-        run: |
-          for arch_dir in clash_party_*; do
-            if [ -d "$arch_dir" ]; then
-              mv "$arch_dir" makeself/
-            fi
-          done
-
-      - name: Create self-extracting packages
-        run: |
-          cd makeself
+          # 创建 README
+          cat > installer-package/README.md << EOF
+          # Clash Party for OpenWrt x86_64
           
-          # 为每个架构创建自解压包
-          for arch_dir in clash_party_*; do
-            if [ -d "$arch_dir" ]; then
-              arch_name=$(echo "$arch_dir" | sed 's/clash_party_//')
-              ./makeself.sh "$arch_dir/" "clash_party_${{ env.LATEST_TAG }}_${arch_name}.run" "Clash Party ${{ env.LATEST_TAG }} for ${arch_name}" ./install.sh
-              echo "已创建: clash_party_${{ env.LATEST_TAG }}_${arch_name}.run"
-            fi
-          done
-
-      - name: Check file sizes
-        run: |
-          cd makeself
-          echo "生成的自解压包信息:"
-          ls -lh clash_party_*.run
-
-      - name: Create release notes
-        run: |
-          cat <<EOF > release_notes.md
-          # Clash Party ${{ env.LATEST_TAG }}
+          版本: ${{ env.VERSION }}
+          架构: x86_64
+          构建时间: $(date)
           
-          ## 自解压安装包
+          ## 安装说明
           
-          此版本提供了以下架构的自解压安装包：
-          
-          $(cd makeself && for file in clash_party_*.run; do echo "- \`$file\`"; done)
+          1. 上传此安装包到 OpenWrt/iStoreOS 设备
+          2. 给予执行权限: \`chmod +x clash-party_${{ env.VERSION }}_x86_64.run\`
+          3. 运行安装: \`./clash-party_${{ env.VERSION }}_x86_64.run\`
           
           ## 使用说明
           
-          1. 将对应的 run 文件上传到 OpenWrt/iStoreOS 设备
-          2. 给予执行权限：\`chmod +x clash_party_*.run\`
-          3. 运行安装：\`./clash_party_*.run\`
-          4. 安装完成后通过 LuCI 界面或命令行配置
+          安装完成后：
+          - 编辑配置: \`/etc/config/clash-party\`
+          - 启用服务: \`/etc/init.d/clash-party enable\`
+          - 启动服务: \`/etc/init.d/clash-party start\`
           
-          ## 支持的架构
-          - x86_64: 适用于 x86 64位设备
-          - aarch64: 适用于 ARM64 设备（如 Raspberry Pi 4）
-          - arm: 适用于 ARM 设备
-          - generic: 通用架构
-          
-          ## 注意事项
-          - 请确保设备有足够的存储空间
-          - 安装前建议备份当前配置
-          - 需要运行在 OpenWrt 或 iStoreOS 环境中
-          
-          ![GitHub Downloads](https://img.shields.io/badge/自解压安装包-成功生成-success?style=for-the-badge)
+          ## 项目信息
+          - GitHub: https://github.com/Liangjianuo/clash-party
+          - 构建版本: ${{ env.VERSION }}
           EOF
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2.1.0
+      - name: Create self-extracting package
+        run: |
+          echo "创建自解压安装包..."
+          cd makeself
+          ./makeself.sh ../installer-package/ \
+            ../clash-party_${{ env.VERSION }}_x86_64.run \
+            "Clash Party ${{ env.VERSION }} for OpenWrt x86_64" \
+            ./install.sh
+          cd ..
+          
+          echo "自解压包创建完成:"
+          ls -lh *.run
+
+      - name: Display build results
+        run: |
+          echo "构建完成！生成的文件："
+          ls -lh *.ipk *.run || echo "未找到生成的文件"
+          echo ""
+          echo "文件详情："
+          if [ -f "clash-party_${{ env.VERSION }}_x86_64.ipk" ]; then
+            echo "IPK 包: clash-party_${{ env.VERSION }}_x86_64.ipk"
+            file clash-party_${{ env.VERSION }}_x86_64.ipk
+          fi
+          if [ -f "clash-party_${{ env.VERSION }}_x86_64.run" ]; then
+            echo "自解压包: clash-party_${{ env.VERSION }}_x86_64.run"
+            file clash-party_${{ env.VERSION }}_x86_64.run
+          fi
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            clash-party_${{ env.VERSION }}_x86_64.ipk
+            clash-party_${{ env.VERSION }}_x86_64.run
+          body: |
+            # Clash Party ${{ env.VERSION }} for OpenWrt x86_64
+            
+            ## 安装包说明
+            
+            - `clash-party_${{ env.VERSION }}_x86_64.ipk` - OpenWrt IPK 包
+            - `clash-party_${{ env.VERSION }}_x86_64.run` - 自解压安装器
+            
+            ## 安装方法
+            
+            ### 使用自解压安装器（推荐）
+            ```bash
+            chmod +x clash-party_${{ env.VERSION }}_x86_64.run
+            ./clash-party_${{ env.VERSION }}_x86_64.run
+            ```
+            
+            ### 使用 IPK 包
+            ```bash
+            opkg install clash-party_${{ env.VERSION }}_x86_64.ipk
+            ```
+            
+            ## 使用说明
+            
+            安装完成后：
+            1. 编辑配置：`/etc/config/clash-party`
+            2. 启用服务：`/etc/init.d/clash-party enable`
+            3. 启动服务：`/etc/init.d/clash-party start`
+            
+            ## 系统要求
+            - OpenWrt 或 iStoreOS
+            - x86_64 架构
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ env.LATEST_TAG }}
-          name: "Clash Party ${{ env.LATEST_TAG }}"
-          body_path: release_notes.md
-          prerelease: false
-          files: |
-            makeself/clash_party_*.run
