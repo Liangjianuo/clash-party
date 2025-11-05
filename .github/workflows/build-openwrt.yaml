@@ -1,0 +1,33 @@
+name: Build OpenWrt Package
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [x86_64, aarch64, armv7]
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Go
+      uses: actions/setup-go@v3
+      with:
+        go-version: '1.21'
+    
+    - name: Build for ${{ matrix.arch }}
+      run: |
+        # 这里添加针对不同架构的编译脚本
+        GOOS=linux GOARCH=${{ matrix.arch }} go build -o clash-party-${{ matrix.arch }}
+        
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: clash-party-${{ matrix.arch }}
+        path: clash-party-${{ matrix.arch }}
