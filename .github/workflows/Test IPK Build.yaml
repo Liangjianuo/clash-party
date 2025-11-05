@@ -1,0 +1,49 @@
+name: Test IPK Build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    
+    - name: Create simple IPK
+      run: |
+        # 创建最简单的 IPK
+        mkdir -p ipk/control ipk/data/usr/bin
+        
+        # control 文件
+        cat > ipk/control/control << 'EOF'
+Package: clash-party-test
+Version: 1.0.0-1
+Architecture: x86_64
+Maintainer: Test
+Description: Test package
+EOF
+        
+        # 测试二进制
+        echo '#!/bin/sh' > ipk/data/usr/bin/test-bin
+        echo 'echo "Test successful"' >> ipk/data/usr/bin/test-bin
+        chmod +x ipk/data/usr/bin/test-bin
+        
+        # 构建 IPK
+        echo "2.0" > ipk/debian-binary
+        cd ipk/control && tar czf ../control.tar.gz . && cd ..
+        cd ipk/data && tar czf ../data.tar.gz . && cd ..
+        ar r test-package.ipk debian-binary control.tar.gz data.tar.gz
+        
+        # 验证
+        echo "=== 测试 IPK 创建完成 ==="
+        ls -la *.ipk
+        file *.ipk
+        cp test-package.ipk ../
+    
+    - name: Upload test IPK
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-ipk-package
+        path: test-package.ipk
