@@ -1,0 +1,210 @@
+#=================================================
+# https://github.com/mihomo-party-org/clash-party
+# Description: Build RunFiles for Clash Party using GitHub Actions
+# Lisence: MIT
+# Author: Clash Party Team
+#=================================================
+
+name: Build Clash Party Run Files
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      
+      - name: Fetch latest release tag from clash-party
+        id: fetch_latest_tag
+        run: |
+          latest_tag=$(curl -s https://api.github.com/repos/mihomo-party-org/clash-party/releases/latest | jq -r '.tag_name')
+          echo "LATEST_TAG=$latest_tag" >> $GITHUB_ENV
+          
+      - name: Clone makeself repository
+        run: git clone https://github.com/megastep/makeself.git
+
+      - name: Download latest clash-party files
+        run: |
+          # 获取最新的 release 资产信息
+          assets_json=$(curl -s https://api.github.com/repos/mihomo-party-org/clash-party/releases/latest)
+          
+          # 下载所有 ipk 文件
+          echo "$assets_json" | grep -oP '"browser_download_url":\s*".*\.ipk"' | cut -d '"' -f 4 | while read url; do
+            if echo "$url" | grep -q "x86_64"; then
+              curl -LO "$url"
+              mkdir -p clash_party_x86_64
+            elif echo "$url" | grep -q "aarch64\|arm64"; then
+              curl -LO "$url"
+              mkdir -p clash_party_aarch64
+            elif echo "$url" | grep -q "arm"; then
+              curl -LO "$url"
+              mkdir -p clash_party_arm
+            else
+              curl -LO "$url"
+              mkdir -p clash_party_generic
+            fi
+          done
+
+      - name: Organize files by architecture
+        run: |
+          # 移动文件到对应架构目录
+          for file in *.ipk; do
+            if [ -f "$file" ]; then
+              if echo "$file" | grep -qi "x86_64"; then
+                mv "$file" clash_party_x86_64/
+              elif echo "$file" | grep -qi "aarch64\|arm64"; then
+                mv "$file" clash_party_aarch64/
+              elif echo "$file" | grep -qi "arm"; then
+                mv "$file" clash_party_arm/
+              else
+                mv "$file" clash_party_generic/
+              fi
+            fi
+          done
+          
+          # 清理文件名（去除特殊字符）
+          for arch_dir in clash_party_*; do
+            if [ -d "$arch_dir" ]; then
+              pushd "$arch_dir" >/dev/null || exit 1
+              for file in *~*.ipk *\ *.ipk; do
+                [ -e "$file" ] || continue
+                # 构造新文件名，去除 ~ 和空格等特殊字符
+                new_file="$(echo "$file" | sed 's/[~ ]//g')"
+                # 如果目标文件名已存在，则提示并跳过
+                if [ -e "$new_file" ]; then
+                  echo "目标文件已存在，跳过: $new_file"
+                  continue
+                fi
+                # 重命名文件
+                mv "$file" "$new_file"
+                echo "已重命名: $file -> $new_file"
+              done
+              popd >/dev/null
+            fi
+          done
+
+      - name: Create install.sh scripts
+        run: |
+          # 创建通用安装脚本
+          cat <<'EOF' > install_template.sh
+          #!/bin/sh
+          echo "开始安装 Clash Party..."
+          
+          # 检查 opkg 是否可用
+          if ! command -v opkg >/dev/null 2>&1; then
+              echo "错误: 未找到 opkg 命令，请确保在 OpenWrt/iStoreOS 环境中运行"
+              exit 1
+          fi
+          
+          # 更新软件包列表
+          echo "更新软件包列表..."
+          opkg update
+          if [ $? -ne 0 ]; then
+              echo "警告: 更新软件包列表失败，尝试继续安装..."
+          fi
+          
+          # 安装所有 ipk 文件
+          echo "安装 Clash Party 组件..."
+          for ipk in *.ipk; do
+              if [ -f "$ipk" ]; then
+                  echo "正在安装: $ipk"
+                  opkg install "$ipk"
+                  if [ $? -ne 0 ]; then
+                      echo "错误: 安装 $ipk 失败"
+                      exit 1
+                  fi
+              fi
+          done
+          
+          echo "Clash Party 安装完成!"
+          echo "请通过 LuCI 界面或命令行配置和使用 Clash Party"
+          EOF
+          
+          # 为每个架构目录复制安装脚本
+          for arch_dir in clash_party_*; do
+            if [ -d "$arch_dir" ]; then
+              cp install_template.sh "$arch_dir/install.sh"
+              chmod +x "$arch_dir/install.sh"
+            fi
+          done
+          
+          # 清理模板文件
+          rm -f install_template.sh
+
+      - name: Move clash-party directories to makeself
+        run: |
+          for arch_dir in clash_party_*; do
+            if [ -d "$arch_dir" ]; then
+              mv "$arch_dir" makeself/
+            fi
+          done
+
+      - name: Create self-extracting packages
+        run: |
+          cd makeself
+          
+          # 为每个架构创建自解压包
+          for arch_dir in clash_party_*; do
+            if [ -d "$arch_dir" ]; then
+              arch_name=$(echo "$arch_dir" | sed 's/clash_party_//')
+              ./makeself.sh "$arch_dir/" "clash_party_${{ env.LATEST_TAG }}_${arch_name}.run" "Clash Party ${{ env.LATEST_TAG }} for ${arch_name}" ./install.sh
+              echo "已创建: clash_party_${{ env.LATEST_TAG }}_${arch_name}.run"
+            fi
+          done
+
+      - name: Check file sizes
+        run: |
+          cd makeself
+          echo "生成的自解压包信息:"
+          ls -lh clash_party_*.run
+
+      - name: Create release notes
+        run: |
+          cat <<EOF > release_notes.md
+          # Clash Party ${{ env.LATEST_TAG }}
+          
+          ## 自解压安装包
+          
+          此版本提供了以下架构的自解压安装包：
+          
+          $(cd makeself && for file in clash_party_*.run; do echo "- \`$file\`"; done)
+          
+          ## 使用说明
+          
+          1. 将对应的 run 文件上传到 OpenWrt/iStoreOS 设备
+          2. 给予执行权限：\`chmod +x clash_party_*.run\`
+          3. 运行安装：\`./clash_party_*.run\`
+          4. 安装完成后通过 LuCI 界面或命令行配置
+          
+          ## 支持的架构
+          - x86_64: 适用于 x86 64位设备
+          - aarch64: 适用于 ARM64 设备（如 Raspberry Pi 4）
+          - arm: 适用于 ARM 设备
+          - generic: 通用架构
+          
+          ## 注意事项
+          - 请确保设备有足够的存储空间
+          - 安装前建议备份当前配置
+          - 需要运行在 OpenWrt 或 iStoreOS 环境中
+          
+          ![GitHub Downloads](https://img.shields.io/badge/自解压安装包-成功生成-success?style=for-the-badge)
+          EOF
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2.1.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ env.LATEST_TAG }}
+          name: "Clash Party ${{ env.LATEST_TAG }}"
+          body_path: release_notes.md
+          prerelease: false
+          files: |
+            makeself/clash_party_*.run
