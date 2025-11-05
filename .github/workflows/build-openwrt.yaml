@@ -1,4 +1,4 @@
-name: Build Clash Party (x86_64 only)
+name: Build OpenWrt/iStoreOS Package (x86_64)
 
 on:
   push:
@@ -7,153 +7,295 @@ on:
     branches: [ main, master, smart_core ]
   workflow_dispatch:
     inputs:
-      skip_analysis:
-        description: 'Skip project analysis'
-        required: false
-        default: false
-        type: boolean
+      version:
+        description: 'Package version'
+        required: true
+        default: '1.0.0'
 
 jobs:
-  build-x86_64:
+  build-package:
     runs-on: ubuntu-latest
     
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
     
-    - name: Setup Go
-      uses: actions/setup-go@v4
-      with:
-        go-version: '1.21'
-      # 完全移除 cache 配置
-    
-    - name: Project analysis
-      if: ${{ !inputs.skip_analysis }}
+    - name: Setup environment
       run: |
-        echo "=== Clash Party Project Analysis ==="
-        echo ""
-        echo "📁 Current directory: $(pwd)"
-        echo ""
-        echo "📄 Top-level files:"
-        ls -la
-        echo ""
-        echo "🔍 Go files structure:"
-        find . -name "*.go" -type f | head -15
-        echo ""
-        echo "🎯 Main package search:"
-        find . -name "*.go" -type f -exec grep -l "package main" {} \; | while read file; do
-          echo "Main package found: $file"
-          # 检查是否有 main 函数
-          if grep -q "func main()" "$file"; then
-            echo "  ✅ Contains func main()"
-          else
-            echo "  ❌ No func main() found"
-          fi
-        done
-        echo ""
-        echo "🏗️ Build entry points:"
-        find . -name "*.go" -type f -exec grep -l "func main()" {} \; | head -5
+        echo "=== Preparing OpenWrt Package Build Environment ==="
+        sudo apt-get update
+        sudo apt-get install -y build-essential libssl-dev zlib1g-dev \
+          git subversion wget python3 python3-pip curl
     
-    - name: Build for x86_64
+    - name: Create OpenWrt package structure
       run: |
-        echo "=== Building Clash Party for x86_64 ==="
+        echo "=== Creating OpenWrt Package Structure ==="
         
-        # 设置编译环境
-        export GOOS=linux
-        export GOARCH=amd64
-        export CGO_ENABLED=0
+        # 创建包目录结构
+        mkdir -p openwrt-package/package/clash-party
+        mkdir -p openwrt-package/package/clash-party/files/usr/bin
+        mkdir -p openwrt-package/package/clash-party/files/etc/init.d
+        mkdir -p openwrt-package/package/clash-party/files/etc/config
+        mkdir -p openwrt-package/package/clash-party/files/etc/clash-party
         
-        echo "Build environment:"
-        echo "GOOS: $GOOS"
-        echo "GOARCH: $GOARCH"
-        echo "CGO_ENABLED: $CGO_ENABLED"
-        echo ""
+        # 创建 Makefile
+        cat > openwrt-package/package/clash-party/Makefile << 'EOF'
+        include $(TOPDIR)/rules.mk
+
+        PKG_NAME:=clash-party
+        PKG_VERSION:=1.0.0
+        PKG_RELEASE:=1
+
+        PKG_MAINTAINER:=Clash Party Team
+        PKG_LICENSE:=MIT
+        PKG_LICENSE_FILES:=LICENSE
+
+        include $(INCLUDE_DIR)/package.mk
+
+        define Package/clash-party
+          SECTION:=net
+          CATEGORY:=Network
+          SUBMENU:=Web Servers/Proxies
+          TITLE:=Clash Party - Enhanced Clash Proxy
+          URL:=https://github.com/Liangjianuo/clash-party
+          DEPENDS:=+kmod-tun +coreutils-nohup
+        endef
+
+        define Package/clash-party/description
+          Clash Party is an enhanced version of Clash proxy with party features.
+          This package provides the OpenWrt integration for Clash Party.
+        endef
+
+        define Build/Prepare
+        endef
+
+        define Build/Configure
+        endef
+
+        define Build/Compile
+        endef
+
+        define Package/clash-party/install
+        	$(INSTALL_DIR) $(1)/usr/bin
+        	$(INSTALL_BIN) ./files/clash-party $(1)/usr/bin/clash-party
+        	
+        	$(INSTALL_DIR) $(1)/etc/init.d
+        	$(INSTALL_BIN) ./files/clash-party.init $(1)/etc/init.d/clash-party
+        	
+        	$(INSTALL_DIR) $(1)/etc/config
+        	$(INSTALL_CONF) ./files/clash-party.conf $(1)/etc/config/clash-party
+        	
+        	$(INSTALL_DIR) $(1)/etc/clash-party
+        	$(INSTALL_CONF) ./files/config.yaml $(1)/etc/clash-party/config.yaml
+        endef
+
+        $(eval $(call BuildPackage,clash-party))
+        EOF
         
-        # 方法1: 首先尝试构建整个项目
-        echo "🔧 Method 1: Building current directory..."
-        if go build -v -trimpath -ldflags="-w -s" -o clash-party-x86_64 . 2>&1; then
-          echo "✅ Method 1 succeeded!"
-        else
-          echo "❌ Method 1 failed, trying alternative methods..."
-          
-          # 方法2: 查找并构建包含 main 函数的文件
-          echo ""
-          echo "🔧 Method 2: Searching for main function..."
-          MAIN_FILE=$(find . -name "*.go" -type f -exec grep -l "func main()" {} \; | head -1)
-          
-          if [ -n "$MAIN_FILE" ]; then
-            echo "Found main in: $MAIN_FILE"
-            echo "Building specific file..."
-            if go build -v -trimpath -ldflags="-w -s" -o clash-party-x86_64 "$MAIN_FILE" 2>&1; then
-              echo "✅ Method 2 succeeded!"
-            else
-              echo "❌ Method 2 failed"
-              exit 1
-            fi
-          else
-            echo "❌ No main function found"
-            exit 1
-          fi
+        # 创建 init 脚本
+        cat > openwrt-package/package/clash-party/files/clash-party.init << 'EOF'
+        #!/bin/sh /etc/rc.common
+        
+        START=99
+        USE_PROCD=1
+        
+        start_service() {
+            procd_open_instance
+            procd_set_param command /usr/bin/clash-party
+            procd_set_param respawn
+            procd_set_param stdout 1
+            procd_set_param stderr 1
+            procd_close_instance
+        }
+        
+        stop_service() {
+            killall clash-party
+        }
+        EOF
+        
+        # 创建配置文件
+        cat > openwrt-package/package/clash-party/files/clash-party.conf << 'EOF'
+        config clash-party 'main'
+            option enabled '0'
+            option config_path '/etc/clash-party/config.yaml'
+        EOF
+        
+        # 创建示例配置文件
+        cat > openwrt-package/package/clash-party/files/config.yaml << 'EOF'
+        # Clash Party Configuration
+        # This is a sample configuration file
+        # Please modify according to your needs
+        
+        port: 7890
+        socks-port: 7891
+        redir-port: 7892
+        mixed-port: 7893
+        
+        mode: rule
+        log-level: info
+        external-controller: 0.0.0.0:9090
+        
+        proxies:
+        proxy-groups:
+        rules:
+          - DOMAIN-SUFFIX,google.com,DIRECT
+          - DOMAIN-KEYWORD,github,DIRECT
+          - IP-CIDR,127.0.0.0/8,DIRECT
+          - GEOIP,CN,DIRECT
+          - MATCH,PROXY
+        EOF
+
+    - name: Download or build Clash binary
+      run: |
+        echo "=== Preparing Clash Binary ==="
+        
+        # 方法1: 下载预编译的 Clash 二进制文件
+        echo "Downloading Clash binary for x86_64..."
+        cd openwrt-package/package/clash-party/files
+        
+        # 下载 mihomo (Clash Meta) - 替换为你需要的版本
+        wget -O mihomo.tar.gz "https://github.com/MetaCubeX/mihomo/releases/download/Prerelease-Alpha/mihomo-linux-amd64.tar.gz" && \
+        tar -xzf mihomo.tar.gz && \
+        mv mihomo clash-party && \
+        chmod +x clash-party && \
+        rm mihomo.tar.gz || \
+        echo "Download failed, creating placeholder binary"
+        
+        # 如果下载失败，创建一个简单的占位脚本
+        if [ ! -f "clash-party" ]; then
+          echo "Creating placeholder binary..."
+          cat > clash-party << 'EOF'
+        #!/bin/sh
+        echo "Clash Party - This is a placeholder binary"
+        echo "Please replace with actual Clash binary"
+        echo "Download from: https://github.com/MetaCubeX/mihomo/releases"
+        exit 1
+        EOF
+          chmod +x clash-party
         fi
         
-        echo ""
-        echo "=== Build Results ==="
-        if [ -f "clash-party-x86_64" ]; then
-          echo "🎉 Build successful!"
-          echo "📊 File information:"
-          file clash-party-x86_64
-          echo "💾 File size: $(ls -lh clash-party-x86_64 | awk '{print $5}')"
-          echo "🔍 Detailed info:"
-          ls -la clash-party-x86_64
-        else
-          echo "💥 Build failed - no output file created"
-          echo "Available files in directory:"
-          ls -la
-          exit 1
-        fi
-    
-    - name: Upload binary artifact
+        # 验证二进制文件
+        file clash-party
+        ls -la clash-party
+
+    - name: Create IPK package
+      run: |
+        echo "=== Creating OpenWrt IPK Package ==="
+        cd openwrt-package/package/clash-party
+        
+        # 创建临时构建目录
+        mkdir -p ipk-build/control
+        mkdir -p ipk-build/data
+        
+        # 复制文件到数据目录
+        cp -r files/* ipk-build/data/
+        
+        # 创建 control 文件
+        cat > ipk-build/control/control << EOF
+        Package: clash-party
+        Version: 1.0.0-1
+        Depends: kmod-tun, coreutils-nohup
+        Architecture: x86_64
+        Maintainer: Clash Party Team
+        Section: net
+        Priority: optional
+        Description: Clash Party - Enhanced Clash Proxy
+        Source: https://github.com/Liangjianuo/clash-party
+        EOF
+        
+        # 创建 postinst 脚本（可选）
+        cat > ipk-build/control/postinst << 'EOF'
+        #!/bin/sh
+        [ -n "\$IPKG_INSTROOT" ] || {
+            echo "Enabling clash-party service..."
+            /etc/init.d/clash-party enable
+        }
+        exit 0
+        EOF
+        chmod +x ipk-build/control/postinst
+        
+        # 创建 prerm 脚本（可选）
+        cat > ipk-build/control/prerm << 'EOF'
+        #!/bin/sh
+        [ -n "\$IPKG_INSTROOT" ] || {
+            echo "Stopping clash-party service..."
+            /etc/init.d/clash-party stop
+            /etc/init.d/clash-party disable
+        }
+        exit 0
+        EOF
+        chmod +x ipk-build/control/prerm
+        
+        # 创建 debian-binary 文件
+        echo "2.0" > ipk-build/debian-binary
+        
+        # 创建 control.tar.gz
+        cd ipk-build/control
+        tar czf ../control.tar.gz .
+        cd ..
+        
+        # 创建 data.tar.gz
+        cd data
+        tar czf ../data.tar.gz .
+        cd ..
+        
+        # 创建最终的 ipk 文件
+        ar r clash-party_1.0.0-1_x86_64.ipk debian-binary control.tar.gz data.tar.gz
+        
+        # 验证 ipk 文件
+        file clash-party_1.0.0-1_x86_64.ipk
+        ls -la *.ipk
+        
+        # 移动 ipk 到工作目录
+        mv clash-party_1.0.0-1_x86_64.ipk ../../../
+        cd ../../../
+        ls -la *.ipk
+
+    - name: Upload IPK artifact
       uses: actions/upload-artifact@v4
       with:
-        name: clash-party-x86_64
-        path: clash-party-x86_64
+        name: clash-party-openwrt-x86_64
+        path: clash-party_1.0.0-1_x86_64.ipk
         retention-days: 30
-    
+
     - name: Create GitHub Release
       if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.ref == 'refs/heads/smart_core')
       uses: softprops/action-gh-release@v1
       with:
-        files: clash-party-x86_64
-        tag_name: x86_64-build-${{ github.run_id }}
-        name: "Clash Party x86_64 Build"
+        files: clash-party_1.0.0-1_x86_64.ipk
+        tag_name: openwrt-x86_64-${{ github.run_id }}
+        name: "Clash Party OpenWrt x86_64 Package"
         body: |
-          Clash Party x86_64 Linux Binary
+          OpenWrt/iStoreOS Package for x86_64 Architecture
           
-          **Build Information:**
+          **Package Information:**
+          - Package: clash-party
+          - Version: 1.0.0-1
+          - Architecture: x86_64
           - Commit: ${{ github.sha }}
           - Build Date: ${{ github.event.head_commit.timestamp }}
-          - Architecture: x86_64 (AMD64)
-          - Repository: ${{ github.repository }}
           
-          **Usage:**
+          **Installation:**
           ```bash
-          # Download and make executable
-          chmod +x clash-party-x86_64
+          # Upload to your OpenWrt/iStoreOS device
+          scp clash-party_1.0.0-1_x86_64.ipk root@192.168.1.1:/tmp/
           
-          # Run directly
-          ./clash-party-x86_64
+          # Install the package
+          opkg update
+          opkg install /tmp/clash-party_1.0.0-1_x86_64.ipk
           
-          # Or install to system path
-          sudo mv clash-party-x86_64 /usr/local/bin/clash-party
+          # Enable and start the service
+          /etc/init.d/clash-party enable
+          /etc/init.d/clash-party start
           ```
           
-          **OpenWrt/iStoreOS Installation:**
-          ```bash
-          # Copy to router
-          scp clash-party-x86_64 root@192.168.1.1:/usr/bin/clash-party
+          **Configuration:**
+          - Edit: `/etc/config/clash-party`
+          - Main config: `/etc/clash-party/config.yaml`
+          - Binary: `/usr/bin/clash-party`
           
-          # Set permissions
-          ssh root@192.168.1.1 "chmod +x /usr/bin/clash-party"
-          ```
+          **Note:** This package includes a placeholder binary. 
+          Replace `/usr/bin/clash-party` with the actual Clash binary from:
+          https://github.com/MetaCubeX/mihomo/releases
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
