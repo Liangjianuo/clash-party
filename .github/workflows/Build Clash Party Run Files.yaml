@@ -25,7 +25,9 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y build-essential git wget unzip libncurses5-dev \
-            zlib1g-dev gawk gettext libssl-dev xsltproc rsync python3 python3-distutils
+          zlib1g-dev gawk gettext libssl-dev xsltproc rsync python3 python3-venv
+           # 建议保持旧构建环境版本：
+          runs-on: ubuntu-22.04
 
       - name: Clone iStoreOS OpenWrt SDK (x86_64)
         run: |
