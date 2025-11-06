@@ -101,7 +101,6 @@ EOF
         VERSION="${{ github.event.inputs.version || github.ref_name }}"
         VERSION=${VERSION#v}
         
-        # 计算安装大小
         INSTALLED_SIZE=$(du -sk openwrt-build/package/clash-party/usr | cut -f1)
         
         cat > openwrt-build/package/clash-party/CONTROL/control << EOF
@@ -114,7 +113,6 @@ Architecture: ${{ matrix.arch }}
 Installed-Size: ${INSTALLED_SIZE}
 Maintainer: mihomo-party-org
 Description: Clash Party - A feature-rich Clash client
- A modern Clash client with rich features and user-friendly interface.
 EOF
 
     - name: Create postinst script
@@ -164,10 +162,8 @@ EOF
         VERSION="${{ github.event.inputs.version || github.ref_name }}"
         VERSION=${VERSION#v}
         
-        # 构建 IPK
         ../../../ipkg-build ./
         
-        # 重命名 IPK 文件
         for ipk in *.ipk; do
           new_name="clash-party-${VERSION}-${{ matrix.arch }}.ipk"
           mv "$ipk" "$new_name"
@@ -192,4 +188,3 @@ EOF
       with:
         name: clash-party-${{ matrix.arch }}
         path: openwrt-build/package/clash-party/*.ipk
-        retention-days: 30
