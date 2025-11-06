@@ -20,8 +20,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        arch: [aarch64, arm64, x86_64, mipsel]
-    
+        arch: [aarch64, x86_64]
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -45,14 +45,13 @@ jobs:
       run: |
         pnpm run build
 
-    - name: Install IPKG build tools
+    - name: Install build tools
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential libncurses5-dev gawk git libssl-dev gettext wget unzip file
+        sudo apt-get install -y build-essential wget file
 
     - name: Create package structure
       run: |
-        # 创建必要的目录结构
         mkdir -p openwrt-build/package/clash-party/CONTROL
         mkdir -p openwrt-build/package/clash-party/usr/bin
         mkdir -p openwrt-build/package/clash-party/usr/share/clash-party
@@ -61,10 +60,15 @@ jobs:
 
     - name: Copy built files
       run: |
-        # 复制构建好的 Linux 可执行文件
+        # 复制可执行文件
         if [ -f "dist/linux-unpacked/clash-party" ]; then
           cp dist/linux-unpacked/clash-party openwrt-build/package/clash-party/usr/bin/
           chmod +x openwrt-build/package/clash-party/usr/bin/clash-party
+        else
+          echo "错误: 未找到构建的可执行文件"
+          ls -la dist/ || echo "dist 目录不存在"
+          ls -la dist/linux-unpacked/ || echo "linux-unpacked 目录不存在"
+          exit 1
         fi
 
         # 复制资源文件
@@ -72,14 +76,9 @@ jobs:
           cp -r dist/linux-unpacked/resources/* openwrt-build/package/clash-party/usr/share/clash-party/
         fi
 
-        # 复制图标文件
-        if [ -f "build/icon.png" ]; then
-          cp build/icon.png openwrt-build/package/clash-party/usr/share/icons/hicolor/256x256/apps/clash-party.png
-        else
-          # 创建默认图标
-          mkdir -p openwrt-build/package/clash-party/usr/share/icons/hicolor/256x256/apps/
-          echo "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==" | base64 -d > openwrt-build/package/clash-party/usr/share/icons/hicolor/256x256/apps/clash-party.png
-        fi
+        # 创建默认图标
+        mkdir -p openwrt-build/package/clash-party/usr/share/icons/hicolor/256x256/apps/
+        echo "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==" | base64 -d > openwrt-build/package/clash-party/usr/share/icons/hicolor/256x256/apps/clash-party.png
 
     - name: Create desktop file
       run: |
@@ -100,8 +99,10 @@ EOF
     - name: Create control file
       run: |
         VERSION="${{ github.event.inputs.version || github.ref_name }}"
-        # 清理版本号中的 'v' 前缀
         VERSION=${VERSION#v}
+        
+        # 计算安装大小
+        INSTALLED_SIZE=$(du -sk openwrt-build/package/clash-party/usr | cut -f1)
         
         cat > openwrt-build/package/clash-party/CONTROL/control << EOF
 Package: clash-party
@@ -110,77 +111,42 @@ Depends: libc
 Source: https://github.com/${{ github.repository }}
 Section: utils
 Architecture: ${{ matrix.arch }}
-Installed-Size: $(du -sk openwrt-build/package/clash-party/usr | cut -f1)
+Installed-Size: ${INSTALLED_SIZE}
 Maintainer: mihomo-party-org
 Description: Clash Party - A feature-rich Clash client
  A modern Clash client with rich features and user-friendly interface.
- Supports multiple platforms and protocols.
 EOF
-
-    - name: Create preinst script
-      run: |
-        cat > openwrt-build/package/clash-party/CONTROL/preinst << 'EOF'
-#!/bin/sh
-# Pre-installation script for Clash Party
-exit 0
-EOF
-        chmod +x openwrt-build/package/clash-party/CONTROL/preinst
 
     - name: Create postinst script
       run: |
         cat > openwrt-build/package/clash-party/CONTROL/postinst << 'EOF'
 #!/bin/sh
-# Post-installation script for Clash Party
-
 set -e
-
-# Update desktop database
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database -q /usr/share/applications 2>/dev/null || true
 fi
-
-# Update mime database  
 if command -v update-mime-database >/dev/null 2>&1; then
     update-mime-database /usr/share/mime 2>/dev/null || true
 fi
-
-# Register URI schemes
 if command -v xdg-mime >/dev/null 2>&1; then
     xdg-mime default clash-party.desktop x-scheme-handler/clash 2>/dev/null || true
     xdg-mime default clash-party.desktop x-scheme-handler/mihomo 2>/dev/null || true
 fi
-
 exit 0
 EOF
         chmod +x openwrt-build/package/clash-party/CONTROL/postinst
-
-    - name: Create prerm script
-      run: |
-        cat > openwrt-build/package/clash-party/CONTROL/prerm << 'EOF'
-#!/bin/sh
-# Pre-removal script for Clash Party
-exit 0
-EOF
-        chmod +x openwrt-build/package/clash-party/CONTROL/prerm
 
     - name: Create postrm script
       run: |
         cat > openwrt-build/package/clash-party/CONTROL/postrm << 'EOF'
 #!/bin/sh
-# Post-removal script for Clash Party
-
 set -e
-
-# Update desktop database
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database -q /usr/share/applications 2>/dev/null || true
 fi
-
-# Update mime database
 if command -v update-mime-database >/dev/null 2>&1; then
     update-mime-database /usr/share/mime 2>/dev/null || true
 fi
-
 exit 0
 EOF
         chmod +x openwrt-build/package/clash-party/CONTROL/postrm
@@ -189,38 +155,41 @@ EOF
       run: |
         wget -q https://raw.githubusercontent.com/openwrt/openwrt/master/scripts/ipkg-build -O ipkg-build
         chmod +x ipkg-build
-        # 修复 ipkg-build 脚本中的常见问题
         sed -i 's/`which ar`/ar/g' ipkg-build
         sed -i 's/`which tar`/tar/g' ipkg-build
 
     - name: Build IPK package
       run: |
         cd openwrt-build/package/clash-party
-        # 计算安装后大小
-        INSTALLED_SIZE=$(du -sk usr | cut -f1)
-        sed -i "s/Installed-Size:.*/Installed-Size: $INSTALLED_SIZE/" CONTROL/control
+        VERSION="${{ github.event.inputs.version || github.ref_name }}"
+        VERSION=${VERSION#v}
         
         # 构建 IPK
         ../../../ipkg-build ./
         
         # 重命名 IPK 文件
         for ipk in *.ipk; do
-          mv "$ipk" "clash-party-${VERSION}-${{ matrix.arch }}.ipk"
+          new_name="clash-party-${VERSION}-${{ matrix.arch }}.ipk"
+          mv "$ipk" "$new_name"
+          echo "构建完成: $new_name"
         done
 
+    - name: List built files
+      run: |
+        echo "构建的文件:"
+        ls -la openwrt-build/package/clash-party/*.ipk || echo "未找到 IPK 文件"
+
     - name: Upload IPK to release
-      uses: softprops/action-gh-release@v1
       if: startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v1
       with:
         files: openwrt-build/package/clash-party/*.ipk
-        draft: false
-        prerelease: false
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Upload IPK as artifact
       uses: actions/upload-artifact@v4
       with:
-        name: clash-party-${{ matrix.arch }}-ipk
+        name: clash-party-${{ matrix.arch }}
         path: openwrt-build/package/clash-party/*.ipk
         retention-days: 30
