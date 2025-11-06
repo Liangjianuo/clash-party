@@ -251,14 +251,14 @@ jobs:
         cd ../../../
         ls -la *.ipk
     - name: Create GitHub Release
-  if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.ref == 'refs/heads/smart_core')
-  uses: softprops/action-gh-release@v1
-  with:
-    files: ./clash-party_1.0.0-1_x86_64.ipk  # 确保文件路径正确
-    tag_name: openwrt-x86_64-${{ github.run_id }}
-    name: "Clash Party OpenWrt x86_64 Package"
-    body: |
-      OpenWrt/iStoreOS Package for x86_64 Architecture
+       if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.ref == 'refs/heads/smart_core')
+       uses: softprops/action-gh-release@v1
+        with:
+         files: ./clash-party_1.0.0-1_x86_64.ipk  # 确保文件路径正确
+       tag_name: openwrt-x86_64-${{ github.run_id }}
+         name: "Clash Party OpenWrt x86_64 Package"
+         body: |
+           OpenWrt/iStoreOS Package for x86_64 Architecture
 
       **Package Information:**
       - Package: clash-party
