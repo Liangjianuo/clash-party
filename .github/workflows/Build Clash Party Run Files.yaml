@@ -41,7 +41,7 @@ jobs:
       run: |
         pnpm run build
 
-    - name: Setup OpenWrt SDK
+    - name: Setup OpenWrt build environment
       run: |
         sudo apt-get update
         sudo apt-get install -y build-essential libncurses5-dev gawk git libssl-dev gettext wget unzip
@@ -50,13 +50,20 @@ jobs:
       run: |
         mkdir -p openwrt/package/clash-party
         cd openwrt/package/clash-party
-
+        
+        # 设置版本号
+        if [ -n "${{ github.event.inputs.version }}" ]; then
+          VERSION="${{ github.event.inputs.version }}"
+        else
+          VERSION="${GITHUB_REF#refs/tags/}"
+        fi
+        
         # 创建 Makefile
         cat > Makefile << 'EOF'
         include $(TOPDIR)/rules.mk
 
         PKG_NAME:=clash-party
-        PKG_VERSION:=${{ github.event.inputs.version || github.ref_name }}
+        PKG_VERSION:=$(VERSION)
         PKG_RELEASE:=1
 
         PKG_MAINTAINER:=mihomo-party-org
@@ -68,7 +75,7 @@ jobs:
           SECTION:=utils
           CATEGORY:=Utilities
           TITLE:=Clash Party
-          URL:=https://github.com/${{ github.repository }}
+          URL:=https://github.com/$(GITHUB_REPOSITORY)
           DEPENDS:=+libc
         endef
 
@@ -87,17 +94,17 @@ jobs:
         endef
 
         define Package/$(PKG_NAME)/install
-          \$(INSTALL_DIR) \$(1)/usr/bin
-          \$(INSTALL_DIR) \$(1)/usr/share/clash-party
-          \$(INSTALL_DIR) \$(1)/usr/share/applications
-          \$(INSTALL_DIR) \$(1)/usr/share/icons/hicolor/256x256/apps
+          $(INSTALL_DIR) $(1)/usr/bin
+          $(INSTALL_DIR) $(1)/usr/share/clash-party
+          $(INSTALL_DIR) $(1)/usr/share/applications
+          $(INSTALL_DIR) $(1)/usr/share/icons/hicolor/256x256/apps
 
-          \$(INSTALL_BIN) ../../dist/linux-unpacked/clash-party \$(1)/usr/bin/clash-party
-          cp -r ../../dist/linux-unpacked/resources/* \$(1)/usr/share/clash-party/
+          $(INSTALL_BIN) ../../dist/linux-unpacked/clash-party $(1)/usr/bin/clash-party
+          cp -r ../../dist/linux-unpacked/resources/* $(1)/usr/share/clash-party/
 
-          \$(INSTALL_DATA) ../../build/icon.png \$(1)/usr/share/icons/hicolor/256x256/apps/clash-party.png
+          $(INSTALL_DATA) ../../build/icon.png $(1)/usr/share/icons/hicolor/256x256/apps/clash-party.png
 
-          cat > \$(1)/usr/share/applications/clash-party.desktop << 'EOD'
+          cat > $(1)/usr/share/applications/clash-party.desktop << 'EOD'
           [Desktop Entry]
           Name=Clash Party
           Comment=Clash Party Client
@@ -110,32 +117,46 @@ jobs:
           EOD
         endef
 
-        \$(eval \$(call BuildPackage,$(PKG_NAME)))
-        EOF
+        $(eval $(call BuildPackage,$(PKG_NAME)))
+EOF
 
     - name: Create control file
       run: |
         cd openwrt/package/clash-party
+        
+        # 设置版本号
+        if [ -n "${{ github.event.inputs.version }}" ]; then
+          VERSION="${{ github.event.inputs.version }}"
+        else
+          VERSION="${GITHUB_REF#refs/tags/}"
+        fi
+        
         mkdir -p CONTROL
         cat > CONTROL/control << EOF
-        Package: clash-party
-        Version: ${{ github.event.inputs.version || github.ref_name }}-1
-        Depends: libc
-        Source: https://github.com/${{ github.repository }}
-        Section: utils
-        Architecture: ${{ matrix.arch }}
-        Installed-Size: $(du -sk ../../dist/linux-unpacked | cut -f1)
-        Maintainer: mihomo-party-org
-        Description: Clash Party - A feature-rich Clash client
-        EOF
+Package: clash-party
+Version: ${VERSION}-1
+Depends: libc
+Source: https://github.com/${{ github.repository }}
+Section: utils
+Architecture: ${{ matrix.arch }}
+Installed-Size: $(du -sk ../../dist/linux-unpacked | cut -f1)
+Maintainer: mihomo-party-org
+Description: Clash Party - A feature-rich Clash client
+EOF
 
     - name: Build IPK package
       run: |
         cd openwrt/package/clash-party
-        # 这里需要根据不同的架构使用对应的 OpenWrt SDK
-        # 由于在 GitHub Actions 中无法直接使用完整的 OpenWrt SDK，
-        # 我们使用 ipkg-build 工具来创建 IPK 包
-        wget https://raw.githubusercontent.com/openwrt/openwrt/master/scripts/ipkg-build
+        
+        # 设置版本号
+        if [ -n "${{ github.event.inputs.version }}" ]; then
+          VERSION="${{ github.event.inputs.version }}"
+        else
+          VERSION="${GITHUB_REF#refs/tags/}"
+        fi
+        
+        # 下载 ipkg-build 工具
+        wget -q https://raw.githubusercontent.com/openwrt/openwrt/master/scripts/ipkg-build
         chmod +x ipkg-build
         
         # 创建临时目录结构
@@ -145,38 +166,48 @@ jobs:
         mkdir -p tmp/usr/share/applications
         mkdir -p tmp/usr/share/icons/hicolor/256x256/apps
         
-        # 复制文件
+        # 复制可执行文件
         cp ../../../dist/linux-unpacked/clash-party tmp/usr/bin/
-        cp -r ../../../dist/linux-unpacked/resources/* tmp/usr/share/clash-party/
-        cp ../../../build/icon.png tmp/usr/share/icons/hicolor/256x256/apps/clash-party.png
+        chmod +x tmp/usr/bin/clash-party
+        
+        # 复制资源文件
+        if [ -d "../../../dist/linux-unpacked/resources" ]; then
+          cp -r ../../../dist/linux-unpacked/resources/* tmp/usr/share/clash-party/
+        fi
+        
+        # 复制图标
+        if [ -f "../../../build/icon.png" ]; then
+          cp ../../../build/icon.png tmp/usr/share/icons/hicolor/256x256/apps/clash-party.png
+        else
+          # 创建一个默认图标
+          convert -size 256x256 xc:white tmp/usr/share/icons/hicolor/256x256/apps/clash-party.png
+        fi
         
         # 创建 desktop 文件
         cat > tmp/usr/share/applications/clash-party.desktop << 'EOF'
-        [Desktop Entry]
-        Name=Clash Party
-        Comment=Clash Party Client
-        Exec=/usr/bin/clash-party
-        Icon=/usr/share/icons/hicolor/256x256/apps/clash-party.png
-        Terminal=false
-        Type=Application
-        Categories=Utility;
-        MimeType=x-scheme-handler/clash;x-scheme-handler/mihomo;
-        EOF
+[Desktop Entry]
+Name=Clash Party
+Comment=Clash Party Client
+Exec=/usr/bin/clash-party
+Icon=/usr/share/icons/hicolor/256x256/apps/clash-party.png
+Terminal=false
+Type=Application
+Categories=Utility;
+MimeType=x-scheme-handler/clash;x-scheme-handler/mihomo;
+EOF
         
         # 创建控制文件
         cp CONTROL/control tmp/CONTROL/
         
         # 构建 IPK
         ./ipkg-build tmp
-        mv *.ipk clash-party-${{ github.event.inputs.version || github.ref_name }}-${{ matrix.arch }}.ipk
+        mv *.ipk clash-party-${VERSION}-${{ matrix.arch }}.ipk
 
     - name: Upload IPK to release
       uses: softprops/action-gh-release@v1
       if: startsWith(github.ref, 'refs/tags/')
       with:
         files: openwrt/package/clash-party/*.ipk
-        draft: false
-        prerelease: false
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
