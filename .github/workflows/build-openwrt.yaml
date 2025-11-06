@@ -250,6 +250,45 @@ jobs:
         mv clash-party_1.0.0-1_x86_64.ipk ../../../
         cd ../../../
         ls -la *.ipk
+    - name: Create GitHub Release
+  if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.ref == 'refs/heads/smart_core')
+  uses: softprops/action-gh-release@v1
+  with:
+    files: ./clash-party_1.0.0-1_x86_64.ipk  # 确保文件路径正确
+    tag_name: openwrt-x86_64-${{ github.run_id }}
+    name: "Clash Party OpenWrt x86_64 Package"
+    body: |
+      OpenWrt/iStoreOS Package for x86_64 Architecture
+
+      **Package Information:**
+      - Package: clash-party
+      - Version: 1.0.0-1
+      - Architecture: x86_64
+      - Commit: ${{ github.sha }}
+      - Build Date: ${{ github.event.head_commit.timestamp }}
+
+      **Installation:**
+      ```bash
+      # Upload to your OpenWrt/iStoreOS device
+      scp clash-party_1.0.0-1_x86_64.ipk root@192.168.1.1:/tmp/
+      # Install the package
+      opkg update
+      opkg install /tmp/clash-party_1.0.0-1_x86_64.ipk
+      # Enable and start the service
+      /etc/init.d/clash-party enable
+      /etc/init.d/clash-party start
+      ```
+
+      **Configuration:**
+      - Edit: `/etc/config/clash-party`
+      - Main config: `/etc/clash-party/config.yaml`
+      - Binary: `/usr/bin/clash-party`
+
+      **Note:** This package includes a placeholder binary.
+      Replace `/usr/bin/clash-party` with the actual Clash binary from:
+      https://github.com/MetaCubeX/mihomo/releases
+  env:
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Upload IPK artifact
       uses: actions/upload-artifact@v4
