@@ -1,109 +1,188 @@
-name: Build OpenWrt iStoreOS Package
+name: Build OpenWrt/iStoreOS Package
 
 on:
   push:
     tags:
-      - v*
-    paths-ignore:
-      - 'README.md'
-      - '.github/**'
+      - 'v*'
   workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号'
+        required: true
+        default: '1.0.0'
 
-permissions: write-all
+env:
+  APP_ID: party.mihomo.app
+  PRODUCT_NAME: Clash Party
 
 jobs:
   build-openwrt:
-    name: Build OpenWrt iStoreOS (x86_64)
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
-
+    strategy:
+      matrix:
+        arch: [aarch64, arm64, x86_64, mipsel]
+    
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+    - name: Checkout code
+      uses: actions/checkout@v4
 
-      - name: Set up build environment
-        run: |
-          sudo apt update
-          sudo apt install -y build-essential git wget unzip libncurses5-dev \
-          zlib1g-dev gawk gettext libssl-dev xsltproc rsync python3 python3-venv
-           # 建议保持旧构建环境版本：
-          runs-on: ubuntu-22.04
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
 
-      - name: Clone iStoreOS OpenWrt SDK (x86_64)
-        run: |
-          mkdir -p openwrt-sdk
-          cd openwrt-sdk
-          # 推荐使用官方 SDK 分支（替换为当前 iStoreOS 对应版本）
-          wget https://downloads.openwrt.org/releases/23.05.3/targets/x86/64/openwrt-sdk-23.05.3-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz
-          tar -xf openwrt-sdk-*.tar.xz --strip=1
+    - name: Install dependencies
+      run: |
+        npm install -g pnpm
+        pnpm install
 
-      - name: Prepare feed and Makefile
-        run: |
-          cd openwrt-sdk
-          echo "src-link local $(pwd)/../../" > feeds.conf
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
-          mkdir -p package/mypackage
-          cp -r ../../package/* package/mypackage/ || true
+    - name: Build Electron app
+      run: |
+        pnpm run build
 
-      - name: Configure build
-        run: |
-          cd openwrt-sdk
-          make defconfig
+    - name: Setup OpenWrt SDK
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential libncurses5-dev gawk git libssl-dev gettext wget unzip
 
-      - name: Build ipk
-        run: |
-          cd openwrt-sdk
-          make package/mypackage/compile V=s
-          mkdir -p ../../dist
-          find bin/packages/x86_64/ -type f -name "*.ipk" -exec cp {} ../../dist/ \;
+    - name: Create OpenWrt package structure
+      run: |
+        mkdir -p openwrt/package/clash-party
+        cd openwrt/package/clash-party
 
-      - name: Generate .run installer (optional)
-        run: |
-          cd dist
-          if [ -f *.ipk ]; then
-            PKG=$(ls *.ipk | head -n 1)
-            cat > install.sh <<'EOF'
-          #!/bin/sh
-          echo "Installing package on iStoreOS / OpenWrt ..."
-          opkg install ./${PKG}
-          echo "Installation completed!"
-          EOF
-            chmod +x install.sh
-            cat install.sh ${PKG} > myapp-installer.run
-          fi
+        # 创建 Makefile
+        cat > Makefile << 'EOF'
+        include $(TOPDIR)/rules.mk
 
-      - name: Generate checksums
-        run: |
-          cd dist
-          sha256sum * > SHA256SUMS
+        PKG_NAME:=clash-party
+        PKG_VERSION:=${{ github.event.inputs.version || github.ref_name }}
+        PKG_RELEASE:=1
 
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: OpenWrt-x86_64
-          path: dist/
-          if-no-files-found: error
+        PKG_MAINTAINER:=mihomo-party-org
+        PKG_LICENSE:=MIT
 
-      - name: Publish Release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            dist/*.ipk
-            dist/*.run
-            dist/SHA256SUMS
-          token: ${{ secrets.GITHUB_TOKEN }}
+        include $(INCLUDE_DIR)/package.mk
 
-      - name: Publish Dev Release
-        if: github.event_name == 'workflow_dispatch'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: dev
-          files: |
-            dist/*.ipk
-            dist/*.run
-            dist/SHA256SUMS
-          prerelease: true
-          draft: false
-          token: ${{ secrets.GITHUB_TOKEN }}
+        define Package/$(PKG_NAME)
+          SECTION:=utils
+          CATEGORY:=Utilities
+          TITLE:=Clash Party
+          URL:=https://github.com/${{ github.repository }}
+          DEPENDS:=+libc
+        endef
+
+        define Package/$(PKG_NAME)/description
+          Clash Party - A feature-rich Clash client
+        endef
+
+        define Build/Prepare
+          mkdir -p $(PKG_BUILD_DIR)
+        endef
+
+        define Build/Configure
+        endef
+
+        define Build/Compile
+        endef
+
+        define Package/$(PKG_NAME)/install
+          \$(INSTALL_DIR) \$(1)/usr/bin
+          \$(INSTALL_DIR) \$(1)/usr/share/clash-party
+          \$(INSTALL_DIR) \$(1)/usr/share/applications
+          \$(INSTALL_DIR) \$(1)/usr/share/icons/hicolor/256x256/apps
+
+          \$(INSTALL_BIN) ../../dist/linux-unpacked/clash-party \$(1)/usr/bin/clash-party
+          cp -r ../../dist/linux-unpacked/resources/* \$(1)/usr/share/clash-party/
+
+          \$(INSTALL_DATA) ../../build/icon.png \$(1)/usr/share/icons/hicolor/256x256/apps/clash-party.png
+
+          cat > \$(1)/usr/share/applications/clash-party.desktop << 'EOD'
+          [Desktop Entry]
+          Name=Clash Party
+          Comment=Clash Party Client
+          Exec=/usr/bin/clash-party
+          Icon=/usr/share/icons/hicolor/256x256/apps/clash-party.png
+          Terminal=false
+          Type=Application
+          Categories=Utility;
+          MimeType=x-scheme-handler/clash;x-scheme-handler/mihomo;
+          EOD
+        endef
+
+        \$(eval \$(call BuildPackage,$(PKG_NAME)))
+        EOF
+
+    - name: Create control file
+      run: |
+        cd openwrt/package/clash-party
+        mkdir -p CONTROL
+        cat > CONTROL/control << EOF
+        Package: clash-party
+        Version: ${{ github.event.inputs.version || github.ref_name }}-1
+        Depends: libc
+        Source: https://github.com/${{ github.repository }}
+        Section: utils
+        Architecture: ${{ matrix.arch }}
+        Installed-Size: $(du -sk ../../dist/linux-unpacked | cut -f1)
+        Maintainer: mihomo-party-org
+        Description: Clash Party - A feature-rich Clash client
+        EOF
+
+    - name: Build IPK package
+      run: |
+        cd openwrt/package/clash-party
+        # 这里需要根据不同的架构使用对应的 OpenWrt SDK
+        # 由于在 GitHub Actions 中无法直接使用完整的 OpenWrt SDK，
+        # 我们使用 ipkg-build 工具来创建 IPK 包
+        wget https://raw.githubusercontent.com/openwrt/openwrt/master/scripts/ipkg-build
+        chmod +x ipkg-build
+        
+        # 创建临时目录结构
+        mkdir -p tmp/CONTROL
+        mkdir -p tmp/usr/bin
+        mkdir -p tmp/usr/share/clash-party
+        mkdir -p tmp/usr/share/applications
+        mkdir -p tmp/usr/share/icons/hicolor/256x256/apps
+        
+        # 复制文件
+        cp ../../../dist/linux-unpacked/clash-party tmp/usr/bin/
+        cp -r ../../../dist/linux-unpacked/resources/* tmp/usr/share/clash-party/
+        cp ../../../build/icon.png tmp/usr/share/icons/hicolor/256x256/apps/clash-party.png
+        
+        # 创建 desktop 文件
+        cat > tmp/usr/share/applications/clash-party.desktop << 'EOF'
+        [Desktop Entry]
+        Name=Clash Party
+        Comment=Clash Party Client
+        Exec=/usr/bin/clash-party
+        Icon=/usr/share/icons/hicolor/256x256/apps/clash-party.png
+        Terminal=false
+        Type=Application
+        Categories=Utility;
+        MimeType=x-scheme-handler/clash;x-scheme-handler/mihomo;
+        EOF
+        
+        # 创建控制文件
+        cp CONTROL/control tmp/CONTROL/
+        
+        # 构建 IPK
+        ./ipkg-build tmp
+        mv *.ipk clash-party-${{ github.event.inputs.version || github.ref_name }}-${{ matrix.arch }}.ipk
+
+    - name: Upload IPK to release
+      uses: softprops/action-gh-release@v1
+      if: startsWith(github.ref, 'refs/tags/')
+      with:
+        files: openwrt/package/clash-party/*.ipk
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Upload IPK as artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: clash-party-ipk-${{ matrix.arch }}
+        path: openwrt/package/clash-party/*.ipk
+        retention-days: 30
